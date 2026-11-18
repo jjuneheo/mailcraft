@@ -393,22 +393,18 @@ fn quoted(s: &str) -> String {
 }
 
 /// The `filename` parameters of `Content-Disposition`: a quoted name when it is plain ASCII, else
-/// the RFC 2231 form (`filename*=utf-8''…`, in numbered pieces when long) after an ASCII stand-in
-/// for readers that don't know it.
+/// the RFC 2231 form (`filename*=utf-8''…`, in numbered pieces when long) after a plain `filename`
+/// for readers that don't know it. That plain one carries the whole name as encoded-words, as
+/// `name` on `Content-Type` does: readers that skip RFC 2231 (Gmail's and NAVER WORKS' web mail
+/// among them) decode encoded-words there, so a Korean, Japanese or Chinese name is shown as it is
+/// written, extension and all, rather than as underscores. Readers that know RFC 2231 take
+/// `filename*`, as before.
 pub(crate) fn file_name_params(name: &str) -> String {
     if is_plain(name) && name.len() <= 200 {
         return format!("; filename={}", quoted(name));
     }
-    let ascii = |s: &str| -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect() };
-    // The extension (at most 16 characters) is kept whole, so a reader that only knows `filename=`
-    // still opens the file with the right program; the stem is cut (at a character) to fit.
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if ext.chars().count() <= 16 => (stem, format!(".{}", ascii(ext))),
-        _ => (name, String::new()),
-    };
-    let room = NAME_PIECE.saturating_sub(ext.len());
-    let stand_in = format!("{}{ext}", ascii(stem).chars().take(room).collect::<String>());
-    let mut out = format!("; filename=\"{stand_in}\"");
+    // The first word is shorter, to fit on a line after ` filename="`.
+    let mut out = format!("; filename={}", quoted(&encode_b(name, 38)));
     let mut pieces: Vec<String> = vec![String::new()];
     for b in name.bytes() {
         let token = if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") };
@@ -813,13 +809,17 @@ mod tests {
     fn file_names() {
         assert_eq!(file_name_params("report.pdf"), "; filename=\"report.pdf\"");
         assert_eq!(file_name_params("my \"best\" file\\x.txt"), r#"; filename="my \"best\" file\\x.txt""#);
-        assert_eq!(file_name_params("résumé €.txt"), "; filename=\"r_sum___.txt\"; filename*=utf-8''r%C3%A9sum%C3%A9%20%E2%82%AC.txt");
+        assert_eq!(
+            file_name_params("résumé €.txt"),
+            "; filename=\"=?UTF-8?B?csOpc3Vtw6kg4oKsLnR4dA==?=\"; filename*=utf-8''r%C3%A9sum%C3%A9%20%E2%82%AC.txt"
+        );
         // Something that looks like an encoded-word must not be read as one.
         assert!(file_name_params("=?UTF-8?Q?x?=.txt").contains("filename*=utf-8''%3D%3FUTF-8%3FQ%3Fx%3F%3D.txt"));
         let long = file_name_params(&"ü".repeat(40));
         assert!(long.contains("; filename*0*=utf-8''%C3%BC") && long.contains("; filename*4*=%") && !long.contains("filename*5"), "{long}");
-        // Each piece fits a folded line: a space before it, a semicolon after.
-        for piece in long.split("; ") {
+        // Each piece fits a folded line: a space before it, a semicolon after. The plain
+        // `filename` may be several encoded-words; the header is folded between them.
+        for piece in long.split("; ").flat_map(|p| p.split(' ')) {
             assert!(piece.len() + 2 <= 78, "{piece}");
         }
         let m = Message {

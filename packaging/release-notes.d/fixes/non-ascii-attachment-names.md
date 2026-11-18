@@ -1,0 +1,1 @@
+- Attachment names in Korean, Japanese, Chinese and other non-Latin letters show as written in Gmail and NAVER WORKS web mail, not as underscores.

@@ -2,45 +2,53 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::write::file_name_params;
-use crate::{Attachment, Body, Message, WriteOptions, parse, write};
+use crate::{Attachment, Body, Message, WriteOptions, decode_words, parse, write};
 use std::sync::Arc;
 
-/// The ASCII `filename="…"` stand-in of the parameters.
-fn stand_in(params: &str) -> &str {
+/// The quoted value of the plain `filename="…"` parameter, as written.
+fn plain_filename(params: &str) -> &str {
     let rest = params.strip_prefix("; filename=\"").unwrap_or("");
     rest.split('"').next().unwrap_or("")
 }
 
-#[test]
-fn stand_in_keeps_the_extension_of_a_long_name() {
-    let p = file_name_params(&format!("{}.pdf", "é".repeat(100)));
-    let s = stand_in(&p);
-    assert!(s.ends_with(".pdf") && s.is_ascii() && s.len() <= 52, "{p}");
-    let p = file_name_params(&format!("{}.docx", "Quarterly-report-".repeat(20)));
-    assert!(stand_in(&p).ends_with(".docx") && stand_in(&p).len() <= 52, "{p}");
+/// What a reader that skips RFC 2231 shows: the plain `filename`, encoded-words decoded.
+fn shown_without_rfc2231(params: &str) -> String {
+    decode_words(plain_filename(params))
 }
 
 #[test]
-fn stand_in_of_an_all_non_ascii_name() {
-    assert_eq!(stand_in(&file_name_params("日本語.pdf")), "___.pdf");
-    assert_eq!(stand_in(&file_name_params("日本語")), "___");
+fn plain_filename_carries_the_whole_name_with_its_extension() {
+    for name in [
+        format!("{}.pdf", "é".repeat(100)),
+        format!("{}.docx", "Quarterly-report-".repeat(20)),
+        "40-2026-0012345_등록공보_테스트.pdf".to_string(),
+        "日本語.pdf".to_string(),
+        "日本語".to_string(),
+        "ü.v1.2.pdf".to_string(),
+        format!("{}.tar.gz", "ü".repeat(100)),
+        "rapport.dokümént".to_string(),
+    ] {
+        let p = file_name_params(&name);
+        assert_eq!(shown_without_rfc2231(&p), name, "{p}");
+        assert!(plain_filename(&p).is_ascii(), "{p}");
+    }
 }
 
 #[test]
-fn stand_in_with_no_extension_or_many_dots() {
-    let p = file_name_params(&"ü".repeat(100));
-    assert!(stand_in(&p).len() <= 52 && !stand_in(&p).is_empty(), "{p}");
-    let p = file_name_params(&format!("{}.tar.gz", "ü".repeat(100)));
-    assert!(stand_in(&p).ends_with(".gz"), "{p}");
-    assert_eq!(stand_in(&file_name_params("ü.v1.2.pdf")), "_.v1.2.pdf");
+fn plain_filename_words_fit_a_folded_line() {
+    for name in [format!("ü.{}", "x".repeat(500)), "日本語".repeat(80), "ü".repeat(100)] {
+        let p = file_name_params(&name);
+        for word in plain_filename(&p).split(' ') {
+            assert!(word.len() + 2 <= 78 && word.starts_with("=?UTF-8?B?"), "{word}");
+        }
+    }
 }
 
 #[test]
-fn stand_in_with_a_non_ascii_or_huge_extension_stays_short_and_ascii() {
-    let p = file_name_params("rapport.dokümént");
-    assert!(stand_in(&p).is_ascii() && stand_in(&p).starts_with("rapport."), "{p}");
-    let p = file_name_params(&format!("ü.{}", "x".repeat(500)));
-    assert!(stand_in(&p).len() <= 52 && stand_in(&p).is_ascii(), "{p}");
+fn plain_filename_of_a_korean_name_is_not_underscores() {
+    let p = file_name_params("등록공보.pdf");
+    assert!(plain_filename(&p).starts_with("=?UTF-8?B?") && !plain_filename(&p).contains('_'), "{p}");
+    assert!(p.contains("filename*=utf-8''%EB%93%B1%EB%A1%9D%EA%B3%B5%EB%B3%B4.pdf"), "{p}");
 }
 
 #[test]
